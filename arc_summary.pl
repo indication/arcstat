@@ -149,44 +149,56 @@ sub fPerc {
 	} else { return sprintf('%0.' . $Decimal . 'f', 100) . "%"; }
 }
 
-my @Kstats = qw(
-	hw.pagesize
-	hw.physmem
-	kern.maxusers
-	vm.kmem_map_free
-	vm.kmem_map_size
-	vm.kmem_size
-	vm.kmem_size_max
-	vm.kmem_size_min
-	vm.kmem_size_scale
-	vm.stats
-	kstat.zfs
-	vfs.zfs
-);
-
 my $Kstat; # = Sun::Solaris::Kstat->new();
 
-sub kstat_update {
-  my @k = `tail -n +3 /proc/spl/kstat/zfs/arcstats`;
-  if (!@k) {
-    exit 1;
-  }
-  ;
-
-  undef $Kstat;
-
-  foreach $_ (@k) {
-    chomp;
-    my ($name,$junk,$value) = split;
-#    print "name=$name,value=$value\n";
-    my @z = split /\./, $name;
-    my $n = pop @z;
-#    print "n=$n\n";
-    ${Kstat}->{"kstat.zfs.misc.arcstats.$n"} = $value;
-  }
+my @Arcstat_pull = `cat /proc/spl/kstat/zfs/arcstats`;
+foreach my $statline (@Arcstat_pull){
+	chomp $statline;
+	my @row = split(/ +/,$statline,5);
+	next if ($#row < 2);
+	$Kstat->{'kstat.zfs.misc.arcstats.' . $row[0]} = $row[2];
 }
 
-kstat_update();
+my @Zfetchstat_pull = `cat /proc/spl/kstat/zfs/zfetchstats`;
+foreach my $statline (@Zfetchstat_pull){
+	chomp $statline;
+	my @row = split(/ +/,$statline,5);
+	next if ($#row < 2);
+	$Kstat->{'kstat.zfs.misc.zfetchstats.' . $row[0]} = $row[2];
+}
+
+my @Vdevstat_pull = `/sbin/cat /proc/spl/kstat/zfs/vdev_cache_stats`;
+foreach my $statline (@Vdevstat_pull){
+	chomp $statline;
+	print "$statline\n";
+	my @row = split(/ +/,$statline,5);
+	next if ($#row < 2);
+	$Kstat->{'kstat.zfs.misc.vdev_cache_stats.' . $row[0]} = $row[2];
+}
+
+my @Zpool_pull = `/sbin/zpool upgrade -v`;
+my $Zpool_version = '';
+foreach my $statline (@Zpool_pull){
+	chomp $statline;
+	next if (!$statline);
+	$statline =~ s/^\s*//;
+	my @row = split(/ +/,$statline,4);
+	next if ($#row < 2);
+	$Zpool_version = $1 if ($row[0] =~ m/^(\d+)/s);
+}
+$Kstat->{'vfs.zfs.version.zpl'} = $Zpool_version;
+
+my @Zfs_pull = `zfs upgrade -v`;
+my $Zfs_version = '';
+foreach my $statline (@Zfs_pull){
+	chomp $statline;
+	next if (!$statline);
+	$statline =~ s/^\s*//;
+	my @row = split(/ +/,$statline,3);
+	next if ($#row < 2);
+	$Zfs_version = $1 if ($row[0] =~ m/^(\d+)/s);
+}
+$Kstat->{'vfs.zfs.version.spa'} = $Zfs_version;
 
 sub _system_memory {
 	sub mem_rounded {
@@ -257,7 +269,7 @@ printf("ZFS Subsystem Report\t\t\t\t%s", $daydate);
 div2;
 
 sub _arc_summary {
-	if (! -e "/proc/spl/kstat/zfs/arcstats") { return };
+	if (!$Kstat->{"vfs.zfs.version.spa"}) { return };
 	my $spa = $Kstat->{"vfs.zfs.version.spa"};
 	my $zpl = $Kstat->{"vfs.zfs.version.zpl"};
 	my $memory_throttle_count = $Kstat->{"kstat.zfs.misc.arcstats.memory_throttle_count"};
@@ -337,7 +349,7 @@ sub _arc_summary {
 }
 
 sub _arc_efficiency {
-	if (! -e "/proc/spl/kstat/zfs/arcstats") { return };
+	if (!$Kstat->{"vfs.zfs.version.spa"}) { return };
 	my $arc_hits = $Kstat->{"kstat.zfs.misc.arcstats.hits"};
 	my $arc_misses = $Kstat->{"kstat.zfs.misc.arcstats.misses"};
 	my $demand_data_hits = $Kstat->{"kstat.zfs.misc.arcstats.demand_data_hits"};
@@ -413,7 +425,7 @@ sub _arc_efficiency {
 }
 
 sub _l2arc_summary {
-	if (! -e "/proc/spl/kstat/zfs/arcstats") { return };
+	if (!$Kstat->{"vfs.zfs.version.spa"}) { return };
 	my $l2_abort_lowmem = $Kstat->{"kstat.zfs.misc.arcstats.l2_abort_lowmem"};
 	my $l2_cksum_bad = $Kstat->{"kstat.zfs.misc.arcstats.l2_cksum_bad"};
 	my $l2_evict_lock_retry = $Kstat->{"kstat.zfs.misc.arcstats.l2_evict_lock_retry"};
@@ -503,7 +515,7 @@ sub _l2arc_summary {
 }
 
 sub _dmu_summary {
-	if (! -e "/proc/spl/kstat/zfs/arcstats") { return };
+	if (!$Kstat->{"vfs.zfs.version.spa"}) { return };
 	my $zfetch_bogus_streams = $Kstat->{"kstat.zfs.misc.zfetchstats.bogus_streams"};
 	my $zfetch_colinear_hits = $Kstat->{"kstat.zfs.misc.zfetchstats.colinear_hits"};
 	my $zfetch_colinear_misses = $Kstat->{"kstat.zfs.misc.zfetchstats.colinear_misses"};
@@ -577,7 +589,7 @@ sub _dmu_summary {
 }
 
 sub _vdev_summary {
-	if (! -e "/proc/spl/kstat/zfs/arcstats") { return };
+	if (!$Kstat->{"vfs.zfs.version.spa"}) { return };
 	my $vdev_cache_delegations = $Kstat->{"kstat.zfs.misc.vdev_cache_stats.delegations"};
 	my $vdev_cache_misses = $Kstat->{"kstat.zfs.misc.vdev_cache_stats.misses"};
 	my $vdev_cache_hits = $Kstat->{"kstat.zfs.misc.vdev_cache_stats.hits"};
@@ -633,8 +645,8 @@ my @unSub = qw(
 	_l2arc_summary
 	_dmu_summary
 	_vdev_summary
-	_sysctl_summary
 );
+#	_sysctl_summary
 
 sub _call_all {
 	my $page = 1;
@@ -669,6 +681,5 @@ if (%opt) {
 } else {
 	_call_all;
 }
-
 
 __END__
